@@ -2,7 +2,7 @@
   "name": "zkp-auth-extension",
   "version": "1.0.0",
   "description": "Chrome extension for zero-knowledge proof authentication",
-  "main": "index.js",
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

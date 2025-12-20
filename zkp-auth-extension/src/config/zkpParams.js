@@ -14,7 +14,7 @@ export const ZKP_PARAMS = {
     // 🔒 GENERATOR (g) - a number that "cycles" through q values
     g: 0x2n,
 
-    h: 0x3n
+    h: 0x4n
 };
 
 // 💡 Why these numbers?
