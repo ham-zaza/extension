@@ -1,222 +1,358 @@
-import React, { useState } from 'react';
-import { User, Smartphone, QrCode } from 'lucide-react';
-import modExp from '../utils/modExp.js'; // ✅ Fixed Import
-import { ZKP_PARAMS } from '../config/zkpParams.js'; // ✅ Fixed Import
+import React, { useState, useEffect, useRef } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
+import { io } from 'socket.io-client';
+import { ShieldAlert, ArrowLeft } from 'lucide-react';
+import { computeProof, getPublicKeys } from '../utils/cryptoUtils';
 
-const LoginForm = ({ secretX, onLogin, updateActivity }) => {
-    const [username, setUsername] = useState('');
-    const [password, setPassword] = useState(''); // Kept for UI consistency, though not used in ZKP
-    const [authMethod, setAuthMethod] = useState('zkp');
-    const [loading, setLoading] = useState(false);
+// ⚠️ VERIFY SERVER IP
+const SERVER_URL = "http://192.168.100.187:3000";
+
+const LoginForm = ({ secretX, onLogin }) => {
+    // Modes: login-zkp | login-qr | recovery
+    const [mode, setMode] = useState('login-zkp');
     const [status, setStatus] = useState('');
+    const [username, setUsername] = useState('');
+    const [loading, setLoading] = useState(false);
 
+    // QR state
+    const [sessionId, setSessionId] = useState(null);
+    const socketRef = useRef(null);
+
+    // Recovery state
+    const [totpCode, setTotpCode] = useState('');
+    const [recoveryToken, setRecoveryToken] = useState(null);
+
+    /* =====================================================
+       1. QR LOGIN FLOW
+    ===================================================== */
+    useEffect(() => {
+        if (mode !== 'login-qr') return;
+
+        const newSessionId = crypto.randomUUID();
+        setSessionId(newSessionId);
+
+        socketRef.current = io(SERVER_URL);
+
+        socketRef.current.on('connect', () => {
+            socketRef.current.emit('join_session', newSessionId);
+        });
+
+        socketRef.current.on('login_success', (data) => {
+            setStatus('✅ Verified by Mobile');
+            setTimeout(() => onLogin(data.username), 1000);
+        });
+
+        return () => {
+            if (socketRef.current) socketRef.current.disconnect();
+        };
+    }, [mode, onLogin]);
+
+    /* =====================================================
+       2. MANUAL REGISTRATION
+    ===================================================== */
     const handleRegister = async () => {
-        if (!username.trim() || !secretX) {
-            setStatus('Enter username and unlock first');
+        if (!username) {
+            setStatus('❌ Username required');
             return;
         }
 
         setLoading(true);
-        updateActivity();
-
-        // 1. Calculate Public Key (Y = g^x, Z = h^x)
-        const y = modExp(ZKP_PARAMS.g, secretX, ZKP_PARAMS.p);
-        const z = modExp(ZKP_PARAMS.h, secretX, ZKP_PARAMS.p);
+        setStatus('Registering identity...');
 
         try {
-            const res = await fetch('http://localhost:3000/api/register', {
+            const keys = await getPublicKeys(secretX);
+
+            const response = await fetch(`${SERVER_URL}/api/register`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     username,
-                    publicKeyY: y.toString(),
-                    publicKeyZ: z.toString()
+                    publicKeyY: keys.y,
+                    publicKeyZ: keys.z
                 })
             });
 
-            if (res.ok) {
-                setStatus('✅ Registered!');
-            } else {
-                const err = await res.json();
-                setStatus(`❌ ${err.message || 'Registration failed'}`);
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.message || 'Registration failed');
             }
+
+            setStatus('✅ Registered successfully');
         } catch (e) {
-            setStatus(`❌ Failed to fetch: ${e.message}`);
-        } finally {
-            setLoading(false);
+            setStatus(`❌ ${e.message}`);
         }
+
+        setLoading(false);
     };
 
-    const handleLogin = async () => {
-        if (!username.trim() || !secretX) {
-            setStatus('Enter username and unlock first');
+    /* =====================================================
+       3. MANUAL ZKP LOGIN
+    ===================================================== */
+    const handleZKPLogin = async () => {
+        if (!username) {
+            setStatus('❌ Username required');
             return;
         }
 
         setLoading(true);
-        updateActivity();
-        setStatus('🔄 Attempting login...');
+        setStatus('Generating proof...');
 
-        if (authMethod === 'mobile') {
-            setTimeout(() => {
-                onLogin(username);
-                setLoading(false);
-            }, 2000);
-            return;
-        }
+        try {
+            const proof = await computeProof(secretX, 'chrome-extension://zk-auth');
 
-        // ZKP Login
-        let successCount = 0;
-        const totalAttempts = 5; // Reduced attempts for speed
+            const response = await fetch(`${SERVER_URL}/api/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, ...proof })
+            });
 
-        for (let attempt = 1; attempt <= totalAttempts; attempt++) {
-            try {
-                const y = modExp(ZKP_PARAMS.g, secretX, ZKP_PARAMS.p);
-                const z = modExp(ZKP_PARAMS.h, secretX, ZKP_PARAMS.p);
-
-                // 1. Random k
-                const array = new Uint8Array(32);
-                crypto.getRandomValues(array);
-                const k = BigInt('0x' + Array.from(array).map(b => b.toString(16).padStart(2, '0')).join('')) % ZKP_PARAMS.q;
-
-                // 2. Commitments (a=g^k, b=h^k)
-                const a = modExp(ZKP_PARAMS.g, k, ZKP_PARAMS.p);
-                const b = modExp(ZKP_PARAMS.h, k, ZKP_PARAMS.p);
-
-                // 3. Fiat-Shamir Challenge
-                // IMPORTANT: Must match Backend verifier order EXACTLY
-                const domain = chrome.runtime.getURL('');
-                const timestamp = Math.floor(Date.now() / 1000);
-
-                const encoder = new TextEncoder();
-                const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(
-                    ZKP_PARAMS.g.toString() +
-                    ZKP_PARAMS.h.toString() +
-                    y.toString() +
-                    z.toString() +
-                    a.toString() +
-                    b.toString() +
-                    domain +
-                    timestamp.toString()
-                ));
-                const hashHex = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
-                const c = BigInt('0x' + hashHex) % ZKP_PARAMS.q;
-
-                // 4. Response s = k + c * x
-                const s = (k + c * secretX) % ZKP_PARAMS.q;
-
-                const res = await fetch('http://localhost:3000/api/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        username,
-                        a: a.toString(),
-                        b: b.toString(),
-                        s: s.toString(),
-                        domain,
-                        timestamp
-                    })
-                });
-
-                if (res.ok) {
-                    successCount++;
-                    setStatus('✅ Login successful!');
-                    onLogin(username);
-                    setLoading(false);
-                    return; // Exit on success
-                } else {
-                    const err = await res.json();
-                    console.log(`❌ Login failed: ${err.error}`);
-                }
-            } catch (e) {
-                console.log(`💥 Error: ${e.message}`);
+            if (!response.ok) {
+                throw new Error('Invalid proof');
             }
+
+            const data = await response.json();
+            onLogin(data.username || username);
+        } catch (e) {
+            setStatus(`❌ ${e.message}`);
         }
 
-        setStatus('❌ Login failed');
         setLoading(false);
     };
 
+    /* =====================================================
+       4. ACCOUNT RECOVERY (NO LOGIN)
+    ===================================================== */
+    const handleRecovery = async () => {
+        if (totpCode.length !== 6) return;
+
+        setLoading(true);
+        setStatus('Verifying ownership...');
+
+        try {
+            const response = await fetch(`${SERVER_URL}/api/recover`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    username,
+                    token: totpCode
+                })
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.message || 'Invalid backup code');
+            }
+
+            setRecoveryToken(data.recoveryToken);
+            setStatus('✅ Recovery approved');
+        } catch (e) {
+            setStatus(`❌ ${e.message}`);
+        }
+
+        setLoading(false);
+    };
+
+    /* =====================================================
+       5. HANDLE FINAL RESET
+    ===================================================== */
+    const handleFinalReset = async () => {
+        if (!confirm("Are you sure? This will disconnect all devices.")) return;
+        setLoading(true);
+        try {
+            const response = await fetch(`${SERVER_URL}/api/reset`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, recoveryToken })
+            });
+
+            if (response.ok) {
+                alert("Account Reset Successful! You can now Register as a new user.");
+                window.location.reload();
+            } else {
+                const data = await response.json();
+                alert("Reset Failed: " + data.message);
+            }
+        } catch (e) {
+            alert("Network Error");
+        }
+        setLoading(false);
+    };
+
+    /* =====================================================
+       TERMINAL RECOVERY VIEW
+    ===================================================== */
+    if (recoveryToken) {
+        return (
+            <div className="p-6 h-full flex flex-col items-center justify-center bg-red-50 text-slate-900">
+                <ShieldAlert className="w-16 h-16 text-red-600 mb-4" />
+                <h2 className="text-xl font-bold text-red-700 mb-2">Account Reset Mode</h2>
+                <p className="text-sm text-center text-slate-600 mb-6">
+                    Identity verified. You can now wipe your old keys and start over.
+                </p>
+
+                <div className="bg-white p-3 rounded border border-red-200 font-mono text-[10px] break-all w-full mb-6">
+                    {recoveryToken}
+                </div>
+
+                <button
+                    onClick={handleFinalReset}
+                    className="w-full bg-red-600 text-white py-3 rounded-lg font-bold hover:bg-red-700 transition shadow-lg mb-4"
+                >
+                    ⚠ RESET ACCOUNT KEYS
+                </button>
+
+                <button
+                    onClick={() => window.location.reload()}
+                    className="text-sm text-slate-500 underline"
+                >
+                    Cancel
+                </button>
+            </div>
+        );
+    }
+
+    /* =====================================================
+       MAIN UI
+    ===================================================== */
     return (
-        <div className="p-6 space-y-6">
-            <div className="text-center">
-                <User className="mx-auto h-12 w-12 text-blue-500 mb-4" />
-                <h2 className="text-2xl font-bold">Login</h2>
-                <p className="text-gray-600 dark:text-gray-400">Enter your credentials</p>
+        <div className="p-6 h-full flex flex-col bg-white text-slate-900">
+            <div className="text-center mb-6">
+                <h2 className="text-2xl font-bold text-slate-800">
+                    {mode === 'recovery' ? 'Recover Account' : 'ZK Login'}
+                </h2>
+                <p className="text-sm text-slate-500">
+                    {mode === 'recovery'
+                        ? 'Use backup code to reset access'
+                        : 'Zero-Knowledge Authentication'}
+                </p>
             </div>
 
-            <div className="space-y-4">
-                <div>
-                    <label className="block text-sm font-medium mb-2">Username</label>
+            {mode !== 'recovery' && (
+                <div className="flex bg-slate-100 p-1 rounded-lg mb-6">
+                    <button
+                        onClick={() => setMode('login-zkp')}
+                        className={`flex-1 py-2 text-xs font-bold rounded-md ${
+                            mode === 'login-zkp'
+                                ? 'bg-white shadow text-blue-600'
+                                : 'text-slate-400'
+                        }`}
+                    >
+                        Manual
+                    </button>
+                    <button
+                        onClick={() => setMode('login-qr')}
+                        className={`flex-1 py-2 text-xs font-bold rounded-md ${
+                            mode === 'login-qr'
+                                ? 'bg-white shadow text-blue-600'
+                                : 'text-slate-400'
+                        }`}
+                    >
+                        QR Scan
+                    </button>
+                </div>
+            )}
+
+            {mode === 'login-zkp' && (
+                <div className="space-y-4">
                     <input
                         type="text"
+                        placeholder="Username"
                         value={username}
                         onChange={(e) => setUsername(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-800"
-                        placeholder="Enter username"
-                        required
+                        className="w-full p-3 border rounded-lg"
                     />
+                    <div className="flex space-x-3">
+                        <button
+                            onClick={handleRegister}
+                            disabled={loading}
+                            className="flex-1 bg-slate-100 py-3 rounded-lg font-bold"
+                        >
+                            Register
+                        </button>
+                        <button
+                            onClick={handleZKPLogin}
+                            disabled={loading}
+                            className="flex-1 bg-blue-600 text-white py-3 rounded-lg font-bold"
+                        >
+                            Login
+                        </button>
+                    </div>
                 </div>
+            )}
 
-                <div>
-                    <label className="block text-sm font-medium mb-2">Password (Optional)</label>
+            {mode === 'login-qr' && (
+                <div className="flex flex-col items-center flex-1 justify-center">
+                    <div className="p-2 border rounded-xl mb-4">
+                        {sessionId && (
+                            <QRCodeSVG
+                                value={JSON.stringify({ sessionId })}
+                                size={140}
+                            />
+                        )}
+                    </div>
+                    <p className="text-xs text-slate-400 mb-6">
+                        Scan with ZK-Auth Mobile
+                    </p>
+                    <button
+                        onClick={() => setMode('recovery')}
+                        className="text-xs text-red-500 flex items-center"
+                    >
+                        <ShieldAlert className="w-3 h-3 mr-1" />
+                        Lost Device? Recover Account
+                    </button>
+                </div>
+            )}
+
+            {mode === 'recovery' && (
+                <div className="space-y-4">
                     <input
-                        type="password"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-800"
-                        placeholder="Not sent to server"
+                        type="text"
+                        placeholder="Username"
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        className="w-full p-3 border rounded-lg"
                     />
-                </div>
-
-                <div>
-                    <label className="block text-sm font-medium mb-2">Auth Method</label>
-                    <div className="flex space-x-2">
-                        <button
-                            onClick={() => setAuthMethod('zkp')}
-                            className={`flex-1 py-2 rounded ${authMethod === 'zkp' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-black'}`}
-                        >
-                            ZKP (Instant)
-                        </button>
-                        <button
-                            onClick={() => setAuthMethod('mobile')}
-                            className={`flex-1 py-2 rounded ${authMethod === 'mobile' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-black'}`}
-                        >
-                            Mobile (Biometric)
-                        </button>
-                    </div>
-                </div>
-
-                {authMethod === 'mobile' && (
-                    <div className="text-center">
-                        <QrCode className="mx-auto h-24 w-24 text-gray-400 mb-2" />
-                        <p className="text-sm text-gray-600 dark:text-gray-400">Scan QR with Mobile App</p>
-                    </div>
-                )}
-
-                {status && (
-                    <div className={`text-sm text-center font-bold ${status.includes('✅') ? 'text-green-500' : 'text-red-500'}`}>
-                        {status}
-                    </div>
-                )}
-
-                <div className="flex space-x-2">
+                    <input
+                        type="text"
+                        placeholder="000000"
+                        value={totpCode}
+                        onChange={(e) =>
+                            setTotpCode(
+                                e.target.value.replace(/\D/g, '').slice(0, 6)
+                            )
+                        }
+                        className="w-full p-3 border rounded-lg text-center text-2xl font-mono"
+                    />
                     <button
-                        onClick={handleRegister}
-                        disabled={loading}
-                        className="flex-1 bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white py-2 px-4 rounded-md"
+                        onClick={handleRecovery}
+                        disabled={loading || totpCode.length !== 6}
+                        className="w-full bg-red-600 text-white py-3 rounded-lg font-bold"
                     >
-                        Register
+                        Recover Account
                     </button>
                     <button
-                        onClick={handleLogin}
-                        disabled={loading}
-                        className="flex-1 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 text-white py-2 px-4 rounded-md"
+                        onClick={() => setMode('login-qr')}
+                        className="w-full text-xs text-slate-500 flex justify-center items-center"
                     >
-                        {loading ? 'Processing...' : 'Login'}
+                        <ArrowLeft className="w-3 h-3 mr-1" /> Cancel
                     </button>
                 </div>
-            </div>
+            )}
+
+            {status && (
+                <div
+                    className={`mt-auto p-3 text-xs font-bold text-center rounded-lg ${
+                        status.includes('❌')
+                            ? 'bg-red-100 text-red-600'
+                            : status.includes('✅')
+                                ? 'bg-green-100 text-green-600'
+                                : 'bg-blue-50 text-blue-600'
+                    }`}
+                >
+                    {status}
+                </div>
+            )}
         </div>
     );
 };
