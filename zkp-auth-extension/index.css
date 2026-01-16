@@ -8,6 +8,42 @@
   }
 }
 
+@layer utilities {
+    /* The moving green/blue scanline */
+    .animate-scan {
+        animation: scan 2.5s linear infinite;
+    }
+
+    /* A subtle breathing glow for the container */
+    .animate-pulse-slow {
+        animation: pulse-glow 3s ease-in-out infinite;
+    }
+}
+
+@keyframes scan {
+    0% { top: 0%; opacity: 0; }
+    10% { opacity: 1; }
+    90% { opacity: 1; }
+    100% { top: 100%; opacity: 0; }
+}
+
+@keyframes pulse-glow {
+    0%, 100% { box-shadow: 0 0 10px rgba(59, 130, 246, 0.1); }
+    50% { box-shadow: 0 0 25px rgba(59, 130, 246, 0.3); }
+}
+
+/* Custom Scrollbar for Terminal Logs */
+.terminal-scrollbar::-webkit-scrollbar {
+    width: 6px;
+}
+.terminal-scrollbar::-webkit-scrollbar-track {
+    background: #0f172a;
+}
+.terminal-scrollbar::-webkit-scrollbar-thumb {
+    background: #334155;
+    border-radius: 3px;
+}
+
 @layer components {
   .btn {
     @apply px-4 py-2 rounded-md font-medium transition-colors;
@@ -20,4 +56,57 @@
   .btn-secondary {
     @apply bg-gray-200 hover:bg-gray-300 text-gray-800 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-white;
   }
+}
+
+/* =========================================
+   NATIVE APP FEEL (Removes Blinking Cursor)
+   ========================================= */
+html, body, #root {
+    /* 1. Stop the blinking line on background clicks */
+    caret-color: transparent;
+
+    /* 2. Stop the mouse turning into a 'text select' bar */
+    cursor: default;
+
+    /* 3. Stop accidental text highlighting on the UI */
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+
+/* =========================================
+   RESTORE INPUT BEHAVIOR
+   ========================================= */
+
+input, textarea {
+    /* Bring back the blinking line ONLY inside inputs */
+    caret-color: #3b82f6; /* Nice Neon Blue cursor */
+
+    /* Bring back the 'text select' mouse cursor */
+    cursor: text;
+
+    /* Allow typing and selecting text inside inputs */
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+/* Allow selecting the Recovery Token (Optional but good UX) */
+.font-mono {
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+/* =========================================
+   HEARTBEAT / WAVEFORM ANIMATIONS
+   ========================================= */
+
+@layer utilities {
+    .animate-wave {
+        animation: wave-animation 1.2s ease-in-out infinite;
+    }
+}
+
+@keyframes wave-animation {
+    0%, 100% { height: 4px; opacity: 0.5; }
+    50% { height: 16px; opacity: 1; }
 }

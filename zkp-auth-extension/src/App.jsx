@@ -5,7 +5,7 @@ import LoginForm from './components/LoginForm';
 import Dashboard from './components/Dashboard';
 import { Shield } from 'lucide-react';
 
-const SESSION_TIMEOUT_MS = 120000; // 2 minutes
+const SESSION_TIMEOUT_MS = 300000; // 5 minutes (Fixed from 2 mins)
 
 const App = () => {
     const [currentScreen, setCurrentScreen] = useState('loading');
@@ -22,17 +22,16 @@ const App = () => {
     /* ---------- Global Session Timeout ---------- */
     useEffect(() => {
         const interval = setInterval(() => {
-            if (
-                secretX !== null &&
-                Date.now() - lastActivity > SESSION_TIMEOUT_MS
-            ) {
+            if (secretX !== null && Date.now() - lastActivity > SESSION_TIMEOUT_MS) {
+                console.log("Session Timed Out due to Inactivity");
                 handleLogout();
             }
-        }, 30000);
+        }, 30000); // Check every 30s
 
         return () => clearInterval(interval);
     }, [secretX, lastActivity]);
 
+    // This now updates on ANY mouse move or key press
     const updateActivity = () => {
         setLastActivity(Date.now());
     };
@@ -74,7 +73,7 @@ const App = () => {
     /* ---------- Loading ---------- */
     if (currentScreen === 'loading') {
         return (
-            <div className="flex items-center justify-center h-screen">
+            <div className="flex items-center justify-center h-screen bg-slate-950">
                 <Shield className="animate-spin h-8 w-8 text-blue-500" />
             </div>
         );
@@ -82,7 +81,14 @@ const App = () => {
 
     /* ---------- Render ---------- */
     return (
-        <div className="w-[350px] h-[600px] bg-white text-slate-900 overflow-hidden">
+        // 1. CHANGED: Global Dark Theme (bg-slate-950 text-slate-100)
+        // 2. CHANGED: Added Global Activity Listeners (onMouseMove, onKeyDown)
+        <div
+            className="w-[350px] h-[600px] bg-slate-950 text-slate-100 overflow-hidden font-sans"
+            onMouseMove={updateActivity}
+            onKeyDown={updateActivity}
+            onClick={updateActivity}
+        >
             {currentScreen === 'pinSetup' && (
                 <PinSetup onPinSet={handlePinSet} />
             )}
